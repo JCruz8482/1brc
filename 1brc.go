@@ -2,13 +2,12 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
 	"runtime"
 	"sort"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -185,63 +184,58 @@ func process(f *os.File, offset int64, size int64, segment int) map[string]*ws {
 			}
 			panic(err)
 		}
-		processLine(line, &w)
+		processLine(line[:len(line)], &w)
 	}
 
 	return w
 }
 
-func processChunk(
-	f *os.File,
-	offset int64,
-	size int64,
-	stations *map[string]*ws,
-	leftover []byte,
-) []byte {
-	buf := make([]byte, size)
-	n, err := f.ReadAt(buf, offset)
-	if err != nil && err != io.EOF {
-		panic(err)
-	}
-
-	buf = buf[:n]
-
-	start := 0
-	for i, ch := range buf {
-		if ch == '\n' {
-			line := append(leftover, buf[start:i+1]...)
-			processLine(line, stations)
-			leftover = nil
-			start = i + 1
-		}
-	}
-
-	if start < len(buf) {
-		leftover = append(leftover, buf[start:]...)
-	}
-
-	return leftover
-}
-
 func processLine(line []byte, stations *map[string]*ws) {
-	split := strings.Split(string(line), ";")
-	if len(split) < 2 {
-		return
-	}
-	str := strings.Replace(split[1], ".", "", 1)
-	str = strings.TrimSuffix(str, "\n")
-	temp, err := strconv.Atoi(str)
+	i := bytes.IndexByte(line, ';')
+	end := bytes.IndexByte(line, '\n')
+
+	name := string(line[:i])
+	start := i + 1
+
+	tempstr := line[start:end]
+	temp, err := bytesToInt16(tempstr)
 	if err != nil {
 		panic(err)
 	}
 
-	name := split[0]
 	val, ok := (*stations)[name]
 	if ok {
 		(*stations)[name] = val.PutTemp(int32(temp))
 	} else {
 		(*stations)[name] = NewWs(int32(temp))
 	}
+}
+
+func bytesToInt16(b []byte) (int16, error) {
+	var result int16
+	var negative bool
+
+	if len(b) > 0 && b[0] == '-' {
+		negative = true
+		b = b[1:]
+	}
+
+	for _, digit := range b {
+		if digit == '.' {
+			continue
+		}
+		if digit >= '0' && digit <= '9' {
+			result = result*10 + int16(digit-'0')
+		} else {
+			return 0, fmt.Errorf("invalid byte sequence: %s", string(b))
+		}
+	}
+
+	if negative {
+		result = -result
+	}
+
+	return result, nil
 }
 
 func sortAndPrint(stations *map[string]*ws) {
