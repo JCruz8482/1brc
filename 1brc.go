@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -15,7 +16,7 @@ import (
 type ws struct {
 	Min   int32
 	Max   int32
-	Mean  float64
+	Sum   int32
 	Count int32
 }
 
@@ -23,7 +24,7 @@ func NewWs(temp int32) *ws {
 	return &ws{
 		Min:   temp,
 		Max:   temp,
-		Mean:  float64(temp),
+		Sum:   temp,
 		Count: 1,
 	}
 }
@@ -49,13 +50,13 @@ func (w *ws) PutTemp(temp int32) *ws {
 	if temp > w.Max {
 		max = temp
 	}
-	mean := (w.Mean*float64(w.Count) + float64(temp)) / float64(w.Count+1)
+	sum := w.Sum + temp
 	count := w.Count + 1
 
 	return &ws{
 		Min:   min,
 		Max:   max,
-		Mean:  mean,
+		Sum:   sum,
 		Count: count,
 	}
 }
@@ -75,12 +76,12 @@ func merge(w *ws, x *ws) *ws {
 	}
 
 	count := w.Count + x.Count
-	mean := (w.Mean*float64(w.Count) + x.Mean*float64(x.Count)) / float64(count)
+	sum := w.Sum + x.Sum
 
 	return &ws{
 		Min:   min,
 		Max:   max,
-		Mean:  mean,
+		Sum:   sum,
 		Count: count,
 	}
 }
@@ -88,7 +89,7 @@ func merge(w *ws, x *ws) *ws {
 func (w ws) String(name string) string {
 	min := fmt.Sprintf("%.1f", float64(w.Min)/10.0)
 	max := fmt.Sprintf("%.1f", float64(w.Max)/10.0)
-	mean := fmt.Sprintf("%.1f", w.Mean/10.0)
+	mean := fmt.Sprintf("%.1f", float64(w.Sum)/float64(w.Count)/10.0)
 	return fmt.Sprintf("%s=%s/%s/%s", name, min, mean, max)
 }
 
@@ -108,10 +109,7 @@ func main() {
 	fsize := fstat.Size()
 	segments := runtime.NumCPU()
 	ssize := fsize / int64(segments)
-	// for each segment
-	// create a new go routine to read file from bytes offset for ssize + offset to newline
-	// to determine offset and end, must find next newline char
-	// An array of []bytes of size ssize + new offset per go routine can be fed to f.ReadAt()
+
 	w := make([]map[string]*ws, segments)
 	offset := int64(0)
 	var wg sync.WaitGroup
@@ -126,11 +124,8 @@ func main() {
 	}
 
 	wg.Wait()
-	/**
 	combinedResults := make(map[string]*ws)
 	for _, segmentMap := range w {
-		fmt.Print("\nsegment has length: ")
-		fmt.Println(len(segmentMap))
 		for key, val := range segmentMap {
 			if existing, found := combinedResults[key]; found {
 				combinedResults[key] = merge(existing, val)
@@ -141,7 +136,6 @@ func main() {
 	}
 
 	sortAndPrint(&combinedResults)
-	*/
 	fmt.Printf("Took %v s\n", time.Since(start))
 }
 
@@ -167,7 +161,6 @@ func getOffsetAndSize(startOffset int64, targetSize int64, fsize int64, f *os.Fi
 
 		if b[0] == '\n' {
 			size += 1
-			nextOffset++
 			break
 		}
 
@@ -179,22 +172,20 @@ func getOffsetAndSize(startOffset int64, targetSize int64, fsize int64, f *os.Fi
 }
 
 func process(f *os.File, offset int64, size int64, segment int) map[string]*ws {
-	fmt.Println("Segment %v size %v offset %v\n", segment, size, offset)
-	csize := int64(2 * 16384)
 	w := make(map[string]*ws)
-	var leftover []byte
 
-	endOffset := offset + size
-	for offset < endOffset {
-		chunkSize := csize
-		if offset+chunkSize > endOffset {
-			chunkSize = endOffset - offset
+	secR := io.NewSectionReader(f, offset, size)
+	r := bufio.NewReader(secR)
+
+	for {
+		line, err := r.ReadBytes('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			panic(err)
 		}
-		leftover = processChunk(f, offset, chunkSize, &w, leftover)
-		offset += chunkSize
-	}
-	if len(leftover) > 0 {
-		processLine(leftover, &w)
+		processLine(line, &w)
 	}
 
 	return w
