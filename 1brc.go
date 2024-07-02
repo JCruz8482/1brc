@@ -28,61 +28,26 @@ func NewWs(temp int32) *ws {
 	}
 }
 
-/*
-*
-!!gotta go faster!!
-
-ideas
-
-* split dataset into 1B / CPU chunks => [][]byte
-
-
-func findNextNewLine()
-*/
-
-func (w *ws) PutTemp(temp int32) *ws {
-	min := w.Min
-	max := w.Max
+func (w *ws) PutTemp(temp int32) {
 	if temp < w.Min {
-		min = temp
+		w.Min = temp
 	}
 	if temp > w.Max {
-		max = temp
+		w.Max = temp
 	}
-	sum := w.Sum + temp
-	count := w.Count + 1
-
-	return &ws{
-		Min:   min,
-		Max:   max,
-		Sum:   sum,
-		Count: count,
-	}
+	w.Sum = w.Sum + temp
+	w.Count = w.Count + 1
 }
 
-func merge(w *ws, x *ws) *ws {
-	var min int32
-	var max int32
-	if w.Min < x.Min {
-		min = w.Min
-	} else {
-		min = x.Min
+func (w *ws) Merge(x *ws) {
+	if x.Min < w.Min {
+		w.Min = x.Min
 	}
-	if w.Max > x.Max {
-		max = w.Max
-	} else {
-		max = x.Max
+	if x.Max > w.Max {
+		w.Max = x.Max
 	}
-
-	count := w.Count + x.Count
-	sum := w.Sum + x.Sum
-
-	return &ws{
-		Min:   min,
-		Max:   max,
-		Sum:   sum,
-		Count: count,
-	}
+	w.Count = w.Count + x.Count
+	w.Sum = w.Sum + x.Sum
 }
 
 func (w ws) String(name string) string {
@@ -117,24 +82,23 @@ func main() {
 		wg.Add(1)
 		go func(f *os.File, offset int64, size int64, i int) {
 			defer wg.Done()
-			w[i] = process(f, offset, size, i)
+			w[i] = process(f, offset, size)
 		}(f, offset, segmentSize, i)
 		offset = nextOffset
 	}
 
 	wg.Wait()
-	combinedResults := make(map[string]*ws)
+	merged := make(map[string]*ws)
 	for _, segmentMap := range w {
 		for key, val := range segmentMap {
-			if existing, found := combinedResults[key]; found {
-				combinedResults[key] = merge(existing, val)
+			if existing, found := merged[key]; found {
+				existing.Merge(val)
 			} else {
-				combinedResults[key] = val
+				merged[key] = val
 			}
 		}
 	}
-
-	sortAndPrint(&combinedResults)
+	sortAndPrint(&merged)
 	fmt.Printf("Took %v s\n", time.Since(start))
 }
 
@@ -147,15 +111,12 @@ func getOffsetAndSize(startOffset int64, targetSize int64, fsize int64, f *os.Fi
 	size := targetSize
 	b := make([]byte, 1)
 	for {
-		s, err := f.ReadAt(b, nextOffset)
+		_, err := f.ReadAt(b, nextOffset)
 		if err != nil {
 			if err == io.EOF {
 				break
 			}
 			panic(err)
-		}
-		if s < len(b) {
-			panic("sheit")
 		}
 
 		if b[0] == '\n' {
@@ -170,7 +131,7 @@ func getOffsetAndSize(startOffset int64, targetSize int64, fsize int64, f *os.Fi
 	return nextOffset + 1, int64(size)
 }
 
-func process(f *os.File, offset int64, size int64, segment int) map[string]*ws {
+func process(f *os.File, offset int64, size int64) map[string]*ws {
 	w := make(map[string]*ws)
 
 	secR := io.NewSectionReader(f, offset, size)
@@ -184,34 +145,29 @@ func process(f *os.File, offset int64, size int64, segment int) map[string]*ws {
 			}
 			panic(err)
 		}
-		processLine(line[:len(line)], &w)
+		processLine(line, &w)
 	}
 
 	return w
 }
 
-func processLine(line []byte, stations *map[string]*ws) {
+func processLine(line []byte, w *map[string]*ws) {
 	i := bytes.IndexByte(line, ';')
-	end := bytes.IndexByte(line, '\n')
 
 	name := string(line[:i])
 	start := i + 1
 
-	tempstr := line[start:end]
-	temp, err := bytesToInt16(tempstr)
-	if err != nil {
-		panic(err)
-	}
+	temp := bytesToInt16(line[start : len(line)-1])
 
-	val, ok := (*stations)[name]
+	val, ok := (*w)[name]
 	if ok {
-		(*stations)[name] = val.PutTemp(int32(temp))
+		val.PutTemp(int32(temp))
 	} else {
-		(*stations)[name] = NewWs(int32(temp))
+		(*w)[name] = NewWs(int32(temp))
 	}
 }
 
-func bytesToInt16(b []byte) (int16, error) {
+func bytesToInt16(b []byte) int16 {
 	var result int16
 	var negative bool
 
@@ -224,36 +180,32 @@ func bytesToInt16(b []byte) (int16, error) {
 		if digit == '.' {
 			continue
 		}
-		if digit >= '0' && digit <= '9' {
-			result = result*10 + int16(digit-'0')
-		} else {
-			return 0, fmt.Errorf("invalid byte sequence: %s", string(b))
-		}
+		result = result*10 + int16(digit-'0')
 	}
 
 	if negative {
 		result = -result
 	}
 
-	return result, nil
+	return result
 }
 
-func sortAndPrint(stations *map[string]*ws) {
-	keys := make([]string, 0, len(*stations))
-	for key := range *stations {
+func sortAndPrint(w *map[string]*ws) {
+	keys := make([]string, 0, len(*w))
+	for key := range *w {
 		keys = append(keys, key)
 	}
 
 	skeys := sort.StringSlice(keys)
 	skeys.Sort()
 
-	fmt.Printf("{%v", (*stations)[skeys[0]].String(skeys[0]))
+	fmt.Printf("{%v", (*w)[skeys[0]].String(skeys[0]))
 	for i, key := range skeys {
 		if i == 0 {
 			continue
 		}
 		fmt.Printf(", ")
-		w := (*stations)[key]
+		w := (*w)[key]
 		fmt.Print(w.String(key))
 	}
 	fmt.Printf("}\n")
